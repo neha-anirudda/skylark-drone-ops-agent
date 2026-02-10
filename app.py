@@ -81,7 +81,7 @@ elif section == "Update Pilot Status":
         st.success(f"✅ Updated {pilot_name} to {new_status}")
         st.cache_data.clear()
 
-# ================= CORE LOGIC =================
+# ================= HELPER FUNCTIONS =================
 def is_free(value):
     return pd.isna(value) or value == ""
 
@@ -89,41 +89,70 @@ def maintenance_ok(date_value):
     if pd.isna(date_value) or date_value == "":
         return True
     try:
-        due_date = pd.to_datetime(date_value).date()
-        return due_date > datetime.today().date()
+        return pd.to_datetime(date_value).date() > datetime.today().date()
     except:
         return False
 
-def assign_mission(pilots_df, drones_df):
+def parse_list(value):
+    if pd.isna(value) or value == "":
+        return set()
+    return set(v.strip().lower() for v in str(value).split(","))
+
+def pilot_qualified(pilot_row, mission_row):
+    pilot_skills = parse_list(pilot_row["skills"])
+    pilot_certs = parse_list(pilot_row["certifications"])
+
+    required_skills = parse_list(mission_row.get("required_skills", ""))
+    required_certs = parse_list(mission_row.get("required_certifications", ""))
+
+    if not required_skills.issubset(pilot_skills):
+        return False, "Skill mismatch"
+
+    if not required_certs.issubset(pilot_certs):
+        return False, "Certification mismatch"
+
+    return True, ""
+
+# ================= CORE LOGIC =================
+def assign_mission(pilots_df, drones_df, missions_df):
     pilots_df["status"] = pilots_df["status"].str.lower()
     drones_df["status"] = drones_df["status"].str.lower()
 
-    # Pilot conflict detection
-    available_pilots = pilots_df[
-        (pilots_df["status"] == "available") &
-        (pilots_df["current_assignment"].apply(is_free))
-    ]
+    mission = missions_df.iloc[0]  # highest priority mission
 
-    # Drone conflict + maintenance detection
-    available_drones = drones_df[
+    # Filter pilots
+    eligible_pilots = []
+    for _, pilot in pilots_df.iterrows():
+        if pilot["status"] != "available":
+            continue
+        if not is_free(pilot["current_assignment"]):
+            continue
+
+        qualified, reason = pilot_qualified(pilot, mission)
+        if qualified:
+            eligible_pilots.append(pilot)
+
+    # Filter drones
+    eligible_drones = drones_df[
         (drones_df["status"] == "available") &
         (drones_df["current_assignment"].apply(is_free)) &
         (drones_df["maintenance_due"].apply(maintenance_ok))
     ]
 
-    if available_pilots.empty:
-        return "❌ No available pilots (busy or unavailable)"
+    if not eligible_pilots:
+        return "❌ No qualified pilots (skill/cert mismatch)"
 
-    if available_drones.empty:
+    if eligible_drones.empty:
         return "❌ No available drones (busy or maintenance due)"
 
-    pilot = available_pilots.iloc[0]["name"]
-    drone = available_drones.iloc[0]["drone_id"]
+    pilot = eligible_pilots[0]["name"]
+    drone = eligible_drones.iloc[0]["drone_id"]
+    mission_id = mission.get("project_id", "Mission")
 
-    return f"✅ Assign pilot **{pilot}** to drone **{drone}**"
+    return f"✅ Assign pilot **{pilot}** to drone **{drone}** for **{mission_id}**"
 
 # ================= DECISION OUTPUT =================
 st.divider()
 st.subheader("🤖 Mission Coordinator Decision")
-decision = assign_mission(pilots_df, drones_df)
+decision = assign_mission(pilots_df, drones_df, missions_df)
 st.success(decision)
