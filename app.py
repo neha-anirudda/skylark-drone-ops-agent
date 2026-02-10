@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime
 
-# ================== PAGE CONFIG ==================
+# ================= PAGE CONFIG =================
 st.set_page_config(page_title="Skylark Drone Ops Agent", layout="wide")
 st.title("🚁 Skylark Drone Operations Coordinator")
 
-# ================== GOOGLE SHEETS SETUP ==================
+# ================= GOOGLE SHEETS SETUP =================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -24,7 +25,7 @@ PILOT_SHEET_ID = "18yDQbQHiOEZ4Duc36t23wztIPSKU9yPHEJu6KAqHe0c"
 DRONE_SHEET_ID = "1n5ERcFnwDJzUquSpaxNnRdETq3UWzfJ_lbhwhcnQniA"
 MISSION_SHEET_ID = "1PBS1TLaXYbvuR004TJKrbuVdgWHPlDYtOINdKx5Fqf0"
 
-# ================== DATA LOADING ==================
+# ================= DATA LOADING =================
 @st.cache_data
 def load_sheet(sheet_id):
     sheet = client.open_by_key(sheet_id).sheet1
@@ -42,14 +43,14 @@ except Exception as e:
     st.exception(e)
     st.stop()
 
-# ================== SIDEBAR NAV ==================
+# ================= SIDEBAR =================
 st.sidebar.title("Navigation")
 section = st.sidebar.radio(
     "Go to",
     ["Pilot Roster", "Drone Fleet", "Missions", "Update Pilot Status"]
 )
 
-# ================== UI SECTIONS ==================
+# ================= UI SECTIONS =================
 if section == "Pilot Roster":
     st.subheader("👨‍✈️ Pilot Roster (Live)")
     st.dataframe(pilots_df)
@@ -80,33 +81,48 @@ elif section == "Update Pilot Status":
         st.success(f"✅ Updated {pilot_name} to {new_status}")
         st.cache_data.clear()
 
-# ================== CORE LOGIC ==================
+# ================= CORE LOGIC =================
+def is_free(value):
+    return pd.isna(value) or value == ""
+
+def maintenance_ok(date_value):
+    if pd.isna(date_value) or date_value == "":
+        return True
+    try:
+        due_date = pd.to_datetime(date_value).date()
+        return due_date > datetime.today().date()
+    except:
+        return False
+
 def assign_mission(pilots_df, drones_df):
     pilots_df["status"] = pilots_df["status"].str.lower()
     drones_df["status"] = drones_df["status"].str.lower()
 
+    # Pilot conflict detection
     available_pilots = pilots_df[
         (pilots_df["status"] == "available") &
-        (pilots_df["current_assignment"].isna() | (pilots_df["current_assignment"] == ""))
+        (pilots_df["current_assignment"].apply(is_free))
     ]
 
+    # Drone conflict + maintenance detection
     available_drones = drones_df[
         (drones_df["status"] == "available") &
-        (drones_df["current_assignment"].isna() | (drones_df["current_assignment"] == ""))
+        (drones_df["current_assignment"].apply(is_free)) &
+        (drones_df["maintenance_due"].apply(maintenance_ok))
     ]
 
     if available_pilots.empty:
-        return "❌ No available pilots"
+        return "❌ No available pilots (busy or unavailable)"
 
     if available_drones.empty:
-        return "❌ No available drones"
+        return "❌ No available drones (busy or maintenance due)"
 
     pilot = available_pilots.iloc[0]["name"]
     drone = available_drones.iloc[0]["drone_id"]
 
     return f"✅ Assign pilot **{pilot}** to drone **{drone}**"
 
-# ================== DECISION OUTPUT ==================
+# ================= DECISION OUTPUT =================
 st.divider()
 st.subheader("🤖 Mission Coordinator Decision")
 decision = assign_mission(pilots_df, drones_df)
